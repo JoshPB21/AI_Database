@@ -4,6 +4,8 @@ from openai import OpenAI
 import os
 from pathlib import Path
 from dotenv import load_dotenv
+import json
+import re
 
 # Load environment variables from .env file
 load_dotenv()
@@ -24,43 +26,99 @@ def extract_text_from_pdf(pdf_path):
         print(f"Error extracting text from PDF: {e}")
         return None
 
-def generate_summary(text):
-    """Generate a summary of the text using OpenAI API."""
+def clean_json_string(json_string):
+    """Remove trailing commas from JSON string to make it valid."""
+    # Remove trailing commas in arrays
+    json_string = re.sub(r',\s*]', ']', json_string)
+    # Remove trailing commas in objects
+    json_string = re.sub(r',\s*}', '}', json_string)
+    return json_string
+
+def analyze_pdf_content(text):
+    """Use OpenAI to extract title, source, categories, subtopic, author, tags, and summary."""
     try:
+        prompt = (
+            "Analyze the following document text and return a valid JSON object with the following fields:\n"
+            "1. title: Title of the article.\n"
+            "2. source: Publisher (e.g., McKinsey, Bloomberg, or 'Unknown' if not clear).\n"
+            "3. category: Main category (e.g., Crypto, Finance).\n"
+            "4. subtopic: Subtopic (e.g., Tokenization for Crypto).\n"
+            "5. author: Author(s) of the article (return 'Unknown' if not found).\n"
+            "6. tags: Array of up to 5 relevant tags (e.g., ['bitcoin', 'meme coin', 'Ethereum']).\n"
+            "7. summary: Summary of the document (100 words or less).\n"
+            "Ensure the JSON is valid, with no trailing commas in arrays or objects.\n"
+            "Return only the JSON object, enclosed in ```json\n...\n```.\n\n"
+            f"Document text (first 4000 characters):\n{text[:4000]}"
+        )
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "You are a helpful assistant that summarizes text."},
-                {"role": "user", "content": f"Summarize the following text in 100 words or less:\n\n{text[:4000]}"}
+                {"role": "system", "content": "You are a helpful assistant that analyzes documents and returns valid JSON output."},
+                {"role": "user", "content": prompt}
             ],
-            max_tokens=150
+            max_tokens=500
         )
-        return response.choices[0].message.content
+        # Extract JSON from response (remove ```json and ``` markers)
+        json_content = response.choices[0].message.content
+        json_content = json_content.strip()
+        if json_content.startswith("```json"):
+            json_content = json_content[7:].strip()
+        if json_content.endswith("```"):
+            json_content = json_content[:-3].strip()
+        
+        # Clean the JSON string to fix trailing commas
+        json_content = clean_json_string(json_content)
+        
+        # Parse the JSON
+        return json.loads(json_content)
     except Exception as e:
-        print(f"Error generating summary: {e}")
-        return None
+        print(f"Error analyzing content: {e}")
+        # Fallback values
+        return {
+            "title": "Unknown",
+            "source": "Unknown",
+            "category": "Unknown",
+            "subtopic": "Unknown",
+            "author": "Unknown",
+            "tags": [],
+            "summary": "No summary available"
+        }
 
 def create_database():
     """Create SQLite database and table if they don't exist."""
     conn = sqlite3.connect("pdf_database.db")
     cursor = conn.cursor()
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS pdfs (
+        CREATE TABLE IF NOT EXISTS articles (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            filename TEXT NOT NULL,
-            content TEXT,
-            summary TEXT
+            title TEXT NOT NULL,
+            source TEXT,
+            category TEXT,
+            subtopic TEXT,
+            author TEXT,
+            tags TEXT,
+            summary TEXT,
+            filename TEXT NOT NULL
         )
     """)
     conn.commit()
     return conn, cursor
 
-def insert_into_database(cursor, conn, filename, content, summary):
-    """Insert PDF data into SQLite database."""
+def insert_into_database(cursor, conn, analysis, filename):
+    """Insert PDF analysis data into SQLite database."""
     try:
         cursor.execute(
-            "INSERT INTO pdfs (filename, content, summary) VALUES (?, ?, ?)",
-            (filename, content, summary)
+            "INSERT INTO articles (title, source, category, subtopic, author, tags, summary, filename) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                analysis.get("title", "Unknown"),
+                analysis.get("source", "Unknown"),
+                analysis.get("category", "Unknown"),
+                analysis.get("subtopic", "Unknown"),
+                analysis.get("author", "Unknown"),
+                ",".join(analysis.get("tags", [])),
+                analysis.get("summary", "No summary available"),
+                filename
+            )
         )
         conn.commit()
         print(f"Successfully inserted {filename} into database.")
@@ -75,10 +133,10 @@ def process_pdf(pdf_path):
         print("Failed to extract text from PDF.")
         return
 
-    # Generate summary using OpenAI
-    summary = generate_summary(text)
-    if not summary:
-        print("Failed to generate summary.")
+    # Analyze content using OpenAI
+    analysis = analyze_pdf_content(text)
+    if not analysis:
+        print("Failed to analyze PDF content.")
         return
 
     # Get filename from path
@@ -86,7 +144,7 @@ def process_pdf(pdf_path):
 
     # Store in database
     conn, cursor = create_database()
-    insert_into_database(cursor, conn, filename, text, summary)
+    insert_into_database(cursor, conn, analysis, filename)
     conn.close()
 
 def main():
