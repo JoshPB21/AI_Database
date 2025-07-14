@@ -6,12 +6,25 @@ from pathlib import Path
 from dotenv import load_dotenv
 import json
 import re
+import tkinter as tk
+from tkinter import filedialog
 
 # Load environment variables from .env file
 load_dotenv()
 
 # Initialize OpenAI client
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+def select_pdf_file():
+    """Open a file dialog to select a PDF file."""
+    root = tk.Tk()
+    root.withdraw()  # Hide the main tkinter window
+    file_path = filedialog.askopenfilename(
+        title="Select a PDF file",
+        filetypes=[("PDF files", "*.pdf")]
+    )
+    root.destroy()  # Close the tkinter instance
+    return file_path
 
 def extract_text_from_pdf(pdf_path):
     """Extract text from a PDF file."""
@@ -149,7 +162,10 @@ def process_pdf(pdf_path):
 
 def main():
     """Main function to process a PDF file."""
-    pdf_path = input("Enter the path to the PDF file: ")
+    pdf_path = select_pdf_file()
+    if not pdf_path:
+        print("No file selected.")
+        return
     if not os.path.exists(pdf_path):
         print("File does not exist.")
         return
